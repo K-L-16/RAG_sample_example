@@ -2,6 +2,10 @@
 import os
 import config_data as config
 import hashlib
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from datetime import datetime
 
 def check_md5(md5_str : str):
     #检查传入的md5字符串是否已经被处理过了
@@ -37,19 +41,69 @@ def get_string_md5(input_str:str, encoding="utf-8"):
 
     return md5_hex
 
-class KnowledgeBaseService(object):
+
+
+class KnowledgeBaseService:
+
     def __init__(self):
-        self.chroma = None #向量存储的chroma向量库对象
-        self.spliter = None #文本分割的对象
+        #如果文件不存在则创建，如果存在则跳过
+        os.makedirs(config.persist_directory, exist_ok=True)
+
+        # 1. 创建 Embedding 模型
+        self.embedding = OpenAIEmbeddings(
+            model=config.embedding_model,
+            api_key=config.embedding_api_key,
+            base_url="https://openrouter.ai/api/v1",
+            check_embedding_ctx_length=False,
+            chunk_size=1
+        )
+
+        # 2. 创建向量数据库
+        self.chroma = Chroma(
+            collection_name=config.collection_name,
+            embedding_function=self.embedding,
+            persist_directory=config.persist_directory
+        )
+
+        # 3. 文本分割器
+        self.splitter = RecursiveCharacterTextSplitter(
+            chunk_size = config.chunk_size, #分割后的文本最大长度
+            chunk_overlap=config.chunk_overlap, #连续文本段之间的字符重叠数量
+            separators=config.separators,#分割符
+            length_function=len #使用python自带的len函数作为长度一句
+        )
 
     def upload_by_str(self, data, filename):
         #将传入的字符串，进行向量化，存入向量数据库中
-        pass
+        #先得到传入字符串的md5
+        md5_hex = get_string_md5(data)
+        if check_md5(md5_hex):
+            return "[跳过]内容已经存在知识库"
+
+        #由于我们这里拿到的是list【str】
+        if(len(data)) > config.max_split_char_number:
+            knowledge_chunks: list[str] = self.splitter.split_text(data)
+        else:
+            knowledge_chunks = [data]
+
+        #metadata:
+        metadata={
+            "source":filename,
+            "create_time":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "operator":"admin"
+        }
+        self.chroma.add_texts(
+            #iterable -> list \tuple
+            knowledge_chunks,
+            metedata=[metadata for _ in knowledge_chunks]
+        )
+        #保存md5到文件中
+        save_md5(md5_hex)
+        return "[成功]内容已经存入知识库"
+        
 
 
 if __name__ == '__main__':
-    r1 = get_string_md5("王二")
-    r2 = get_string_md5("王二")
-
-    print(r1)
-    print(r2)
+    service = KnowledgeBaseService()
+    r = service.upload_by_str("这是一个测试知识库的内容","testfile")
+    print(r)
